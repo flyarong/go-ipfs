@@ -1,5 +1,464 @@
 # go-ipfs changelog
 
+## 0.5.0 RC1 2020-04-06
+
+**WARNING** THIS IS A DRAFT! It highlights some of the new features, along with
+a bunch of important errata. But it's _definitely_ missing a _ton_ of shiny new
+features.
+
+### Highlights & Errata
+
+This release includes many important changes users should be aware of.
+
+#### New DHT
+
+This release includes an almost completely rewritten DHT implementation with a
+new protocol version. From a user's perspective, providing content, finding
+content, and resolving IPNS records should simply get faster. However, this is a
+_significant_ (albeit well tested) change and significant changes are always
+risky, so heads up.
+
+##### Old v. New
+
+The current DHT suffers from three core issues addressed in this release:
+
+1. Most peers in the DHT cannot be dialed (e.g., due to firewalls and NATs).
+   Much of a DHT query time is wasted trying to connect to peers that cannot be
+   reached.
+2. The DHT query logic doesn't properly terminate when it hits the end of the
+   query and, instead, aggressively keeps on searching.
+3. The routing tables are poorly maintained. This can cause a search that should
+   be logarithmic in the size of the network to be linear.
+
+###### Reachable
+
+We have addressed the problem of undialable nodes by having nodes wait to join
+the DHT as "server" nodes until they've confirmed that they are reachable from
+the public internet. Additionally, we've introduced:
+
+* A new libp2p protocol to push updates to our peers when we start/stop listen
+  on protocols.
+* A libp2p event bus for processing updates like these.
+* A new DHT protocol version. New DHT nodes will not admit old DHT nodes into
+  their routing tables. Old DHT nodes will still be able to issue queries
+  against the new DHT, they just won't be queried or referred by new DHT nodes.
+  This way, old, potentially unreachable nodes with bad routing tables won't
+  pollute the new DHT.
+
+Unfortunately, there's a significant downside to this approach: VPNs, offline
+LANs, etc. where _all_ nodes on the network have private IP addresses and never
+communicate over the public internet. In this case, none of these nodes would be
+"publicly reachable".
+
+To address this last point, go-ipfs 0.5.0 will run _two_ DHTs: one for private
+networks and one for the public internet. That is, every node will participate
+in a LAN DHT and a public WAN DHT.
+
+**RC1 NOTE:** Several of these features have not been enabled in RC1:
+
+1. We haven't yet switched the protocol version and will be running the DHT in
+   "compatibility mode" with the old DHT. Once we flip the switch and enable the
+   new protocol version, we will need to ensure that at least 20% of the
+   publicly reachable DHT speaks the new protocol, all at once. The plan is to
+   introduce a large number of "booster" nodes while the network transitions.
+2. We haven't yet introduced the split LAN/WAN DHTs. We're still testing this
+   approach and considering alternatives.
+3. Because we haven't introduced the LAN/WAN DHT split, IPFS nodes running in
+   DHT server mode will continue to run in DHT server mode _without_ waiting to
+   confirm that they're reachable from the public internet. Otherwise, we'd
+   break IPFS nodes running DHTs in VPNs and disconnected LANs.
+
+###### Query Logic
+
+We've fixed the DHT query logic by correctly implementing Kademlia (with a few
+tweaks). This should significantly speed up:
+
+* Publishing IPNS & provider records. We previously continued searching for
+  closer and closer peers to the "target" until we timed out, then we put to the
+  closest peers we found.
+* Resolving IPNS addresses. We previously continued IPNS record searches until
+  we ran out of peers to query, timed out, or found 16 records.
+
+In both cases, we now continue till we find the closest peers then stop.
+
+###### Routing Tables
+
+Finally, we've addressed the poorly maintained routing tables by:
+
+* Reducing the likelihood that the connection manager will kill connections to
+  peers in the routing table.
+* Keeping peers in the routing table, even if we get disconnected from them.
+* Actively and frequently querying the DHT to keep our routing table full.
+
+##### Testing
+
+The DHT rewrite was made possible by our new testing framework,
+[testground](https://github.com/ipfs/testground), which allows us to spin up
+multi-thousand node tests with simulated real-world network conditions. With
+testground and some custom analysis tools, we were able to gain confidence that
+the new DHT implementation behaves correctly.
+
+#### Refactored Bitswap
+
+This release includes a _major_ [bitswap refactor][bitswap-refactor] running a
+new, but backwards compatible, bitswap protocol. We expect these changes to
+improve performance significantly.
+
+With the refactored bitswap, we expect:
+
+* Few to no duplicate blocks when fetching data from other nodes speaking the
+  _new_ protocol.
+* Better parallelism when fetching from multiple peers.
+
+Note, the new bitswap won't magically make downloading content any faster until
+both seeds and leaches have updated. If you're one of the first to upgrade to
+0.5.0 and try downloading from peers that haven't upgraded, you're unlikely to
+see much of a performance improvement, if any.
+
+[bitswap-refactor]: https://blog.ipfs.io/2020-02-14-improved-bitswap-for-container-distribution/
+
+#### Provider Record Changes
+
+When you add content to your IPFS node, you advertise this content to the
+network by announcing it in the DHT. We call this "providing".
+
+However, go-ipfs has multiple ways to address the same underlying bytes.
+Specifically, we address content by content ID (CID) and the same underlying
+bytes can be addressed using (a) two different versions of CIDs (CIDv1 and
+CIDv2) and (b) with different "codecs" depending on how we're interpreting the
+data.
+
+Prior to go-ipfs 0.5.0, we used the content id (CID) in the DHT when sending out
+provider records for content. Unfortunately, this meant that users trying to
+find data announced using one CID wouldn't find nodes providing the content
+under a different CID.
+
+In go-ipfs 0.5.0, we're announcing data by _multihash_, not _CID_. This way,
+regardless of the CID version used by the peer adding the content, the peer
+trying to download the content should still be able to find it.
+
+**Warning:** as part of the network, this could impact finding content added
+with CIDv1. Because go-ipfs 0.5.0 will announce and search for content using the
+bare multihash (equivalent to the v0 CID), go-ipfs 0.5.0 will be unable to find
+CIDv1 content published by nodes prior to go-ipfs 0.5.0 and vice-versa. As CIDv1
+is _not_ enabled by default so we believe this will have minimal impact.
+However, users are _strongly_ encouraged to upgrade as soon as possible.
+
+#### IPFS/Libp2p Address Format
+
+If you've ever run a command like `ipfs swarm peers`, you've likely seen paths
+that look like `/ip4/193.45.1.24/tcp/4001/ipfs/QmSomePeerID`. These paths are
+_not_ file paths, they're multiaddrs; addresses of peers on the network.
+
+Unfortunately, `/ipfs/Qm...` is _also_ the same path format we use for files.
+This release, changes the multiaddr format from
+<code>/ip4/193.45.1.24/tcp/4001/<b>ipfs</b>/QmSomePeerID</code> to
+<code>/ip4/193.45.1.24/tcp/4001/<b>p2p</b>/QmSomePeerID</code> to make the
+distinction clear.
+
+What this means for users:
+
+* Old-style multiaddrs will still be accepted as inputs to IPFS.
+* If you were using a multiaddr library (go, js, etc.) to name _files_ because
+  `/ipfs/QmSomePeerID` looks like `/ipfs/QmSomeFile`, your tool may break if you
+  upgrade this library.
+* If you're manually parsing multiaddrs and are searching for the string
+  `/ipfs/`..., you'll need to search for `/p2p/...`.
+
+
+#### Minimum RSA Key Size
+
+Previously, IPFS did not enforce a minimum RSA key size. In this release, we've
+introduced a minimum 2048 bit RSA key size. IPFS generates 2048 bit RSA keys by
+default so this shouldn't be an issue for anyone in practice. However, users who
+explicitly chose a smaller key size will not be able to communicate with new
+nodes.
+
+Unfortunately, the some of the bootstrap peers _did_ intentionally generate 1024
+bit RSA keys so they'd have vanity peer addresses (starting with QmSoL for
+"solar net"). All IPFS nodes should _also_ have peers with >= 2048 bit RSA keys
+in their bootstrap list, but we've introduced a migration to ensure this.
+
+We implemented this change to follow security best practices and to remove a
+potential foot-gun. However, in practice, the security impact of allowing
+insecure RSA keys should have been next to none because IPFS doesn't trust other
+peers on the network anyways.
+
+#### Subdomain Gateway
+
+The gateway will redirect from `http://localhost:5001/ipfs/CID/...` to
+`http://CID.ipfs.localhost:5001/...` by default. This will:
+
+* Ensure that every dapp gets its own browser origin.
+* Make it easier to write websites that "just work" with IPFS because absolute
+  paths will now work.
+  
+Paths addressing the gateway by IP address (`http://127.0.0.1:5001/ipfs/CID`)
+will not be altered as IP addresses can't have subdomains.
+
+Note: cURL doesn't follow redirects by default. To avoid breaking cURL and other
+clients that don't support redirects, go-ipfs will return the requested file
+along with the redirect. Browsers will follow the redirect and abort the
+download while cURL will ignore the redirect and finish the download.
+
+#### TLS By Default
+
+In this release, we're switching TLS to be the _default_ transport. This means
+we'll try to encrypt the connection with TLS before re-trying with SECIO.
+
+Contrary to the announcement in the go-ipfs 0.4.23 release notes, this release
+does not remove SECIO support to maintain compatibility with js-ipfs.
+
+#### SECIO Deprecation Notice
+
+SECIO should be considered to be well on the way to deprecation and will be
+completely disabled in either the next release (0.6.0, ~mid May) or the one
+following that (0.7.0, ~end of June). Before SECIO is disabled, support will be
+added for the NOISE transport for compatibility with other IPFS implementations.
+
+#### QUIC Upgrade
+
+If you've been using the experimental QUIC support, this release includes
+
+**RC1 NOTE:** We've temporarily backed out of the new QUIC version because it
+currently requires go 1.14 and go 1.14 has some scheduler bugs that go-ipfs can
+reliably trigger.
+
+#### Badger Datastore
+
+In this release, we're calling the badger datastore (enabled at initialization
+with `ipfs init --profile=badgerds`) as stable. However, we're not yet enabling
+it by default.
+
+The benefit of badger is that adding/fetching data to/from badger is
+_significantly_ faster than adding/fetching data to/from the default datastore,
+flatfs. In some tests, adding data to badger is 32x faster than flatfs (in this
+release).
+
+However,
+
+1. Badger is complicated while flatfs pushes all the complexity down into the
+   filesystem itself. That means that flatfs is only likely to lose your data
+   if your underlying filesystem gets corrupted while there are more
+   opportunities for badger itself to get corrupted.
+2. Badger can use a lot of memory. In this release, we've tuned badger to use
+   very little (~20MiB) of memory by default. However, it can still produce
+   large (1GiB) spikes in memory usage when garbage collecting.
+3. Badger isn't very aggressive when it comes to garbage collection and we're
+   still investigating ways to get it to more aggressively clean up after
+   itself.
+
+TL;DR: Use badger if performance is your main requirement, you rarely/never
+delete anything, and you have some memory to spare.
+
+#### Systemd Support 
+
+For Linux users, this release includes support for two systemd features: socket
+activation and startup/shutdown notifications. This makes it possible to:
+
+* Start IPFS on demand on first use.
+* Wait for IPFS to finish starting before starting services that depend on it.
+
+You can find the new systemd units in the go-ipfs repo under misc/systemd.
+
+#### IPFS API Over Unix Domain Sockets
+
+This release supports exposing the IPFS API over a unix domain socket in the
+filesystem. You use this feature, run:
+
+```bash
+> ipfs config Addresses.API "/unix/path/to/socket/location"
+```
+
+#### Repo Migration
+
+IPFS uses repo migrations to make structural changes to the "repo" (the config,
+data storage, etc.) on upgrade.
+
+This release includes two very simple repo migrations: a config migration to
+ensure that the config contains working bootstrap nodes and a keystore migration
+to base32 encode all key filenames.
+
+In general, migrations should not require significant manual intervention.
+However, you should be aware of migrations and plan for them.
+
+* If you update go-ipfs with `ipfs update`, `ipfs update` will run the migration
+  for you.
+* If you start the ipfs daemon with `ipfs daemon --migrate`, ipfs will migrate
+  your repo for you on start.
+
+Otherwise, if you want more control over the repo migration process, you can
+manually install and run the [repo migration
+tool](http://dist.ipfs.io/#fs-repo-migrations).
+
+#### Bootstrap Peer Changes
+
+**AUTOMATIC MIGRATION REQUIRED**
+
+The first migration will update the bootstrap peer list to:
+
+1. Replace the old bootstrap nodes (ones with peer IDs starting with QmSoL),
+   with new bootstrap nodes (ones with addresses that start with
+   `/dnsaddr/bootstrap.libp2p.io`.
+2. Rewrite the address format from `/ipfs/QmPeerID` to `/p2p/QmPeerID`.
+
+We're migrating addresses for a few reasons:
+
+1. We're using DNS to address the new bootstrap nodes so we can change the
+   underlying IP addresses as necessary.
+2. The new bootstrap nodes use 2048 bit keys while the old bootstrap nodes use
+   1024 bit keys.
+3. We're normalizing the address format to `/p2p/Qm...`.
+
+Note: This migration won't _add_ the new bootstrap peers to your config if
+you've explicitly removed the old bootstrap peers. It will also leave custom
+entries in the list alone. In other words, if you've customized your bootstrap
+list, this migration won't clobber your changes.
+
+#### Keystore Changes
+
+**AUTOMATIC MIGRATION REQUIRED**
+
+Go-IPFS stores additional keys (i.e., all keys other than the "identity" key) in
+the keystore. You can list these keys with `ipfs key`.
+
+Currently, the keystore stores keys as regular files, named after the key
+itself. Unfortunately, filename restrictions and case-insensitivity are platform
+specific. To avoid platform specific issues, we're base32 encoding all key names
+and renaming all keys on-disk.
+
+## 0.4.23 2020-01-29
+
+Given the large number of fixes merged since 0.4.22, we've decided to cut another patch release.
+
+This release contains critical fixes. Please upgrade ASAP. Importantly, we're strongly considering switching to TLS by default in go-ipfs 0.5.0 and dropping SECIO support. However, the current TLS transport in go-ipfs 0.4.22 has a bug that can cause connections to spontaneously disconnect during the handshake.
+
+This release fixes that bug, among many other issues. Users that _don't_ upgrade may experience connectivity issues when the network upgrades to go-ipfs 0.5.0.
+
+### Highlights
+
+* Fixes build on go 1.13
+* Fixes an issue where we may not connect to providers in bitswap.
+* Fixes an issue on the TLS transport where we may abort a handshake unintentionally.
+* Fixes a common panic in the websocket transport.
+* Adds support for recursively resolving dnsaddrs (makes go-ipfs compatible with the new bootstrappers).
+* Fixes several potential panics/crashes.
+* Switches to using pre-defined autorelays instead of trying to find them in the DHT:
+  * Avoids selecting random, potentially poor, relays.
+  * Avoids spamming the DHT with requests trying to find relays.
+  * Reduces the impact of accidentally enabling AutoRelay + RelayHop. I.e., the network won't try to DoS you.
+* Modifies the connection manager to not count connections in the grace period towards the connection limit.
+  * Pro: New connections don't cause us to close useful, existing connections.
+  * Con: Libp2p will keep more connections. Consider reducing your HighWater after applying this patch.
+* Improved peer usefulness tracking in bitswap. Frequently used peers will be marked as "important" and the connection manager will avoid closing connections to these peers.
+* Includes a new version of the WebUI to fix some issues with the peers map.
+
+## Changelog
+
+- github.com/ipfs/go-ipfs:
+  - feat: update the webui to fix some performance issues ([ipfs/go-ipfs#6844](https://github.com/ipfs/go-ipfs/pull/6844))
+  - fix: limit SW registration to content root ([ipfs/go-ipfs#6801](https://github.com/ipfs/go-ipfs/pull/6801))
+  - fix issue 6760, adding with hash-only, high CPU usage. ([ipfs/go-ipfs#6764](https://github.com/ipfs/go-ipfs/pull/6764))
+  - fix(coreapi/add): close the fake repo used when adding with hash-only ([ipfs/go-ipfs#6747](https://github.com/ipfs/go-ipfs/pull/6747))
+  - fix bug 6748 ([ipfs/go-ipfs#6754](https://github.com/ipfs/go-ipfs/pull/6754))
+  - fix(pin): wait till after fetching to remove direct pin ([ipfs/go-ipfs#6708](https://github.com/ipfs/go-ipfs/pull/6708))
+  - pin: fix pin update X Y where X==Y ([ipfs/go-ipfs#6669](https://github.com/ipfs/go-ipfs/pull/6669))
+  - namesys: set the correct cache TTL on publish ([ipfs/go-ipfs#6667](https://github.com/ipfs/go-ipfs/pull/6667))
+  - build: fix golangci again ([ipfs/go-ipfs#6641](https://github.com/ipfs/go-ipfs/pull/6641))
+  - make: move all test deps to a separate module ([ipfs/go-ipfs#6637](https://github.com/ipfs/go-ipfs/pull/6637))
+  - fix: close peerstore on stop ([ipfs/go-ipfs#6629](https://github.com/ipfs/go-ipfs/pull/6629))
+  - build: fix build when we don't have a full git tree ([ipfs/go-ipfs#6626](https://github.com/ipfs/go-ipfs/pull/6626))
+- github.com/ipfs/go-bitswap (v0.0.8-cbb485998356 -> v0.0.8-e37498cf10d6):
+  - fix: wait until we finish connecting before we cancel the context ([ipfs/go-bitswap#226](https://github.com/ipfs/go-bitswap/pull/226))
+  - engine: tag peers based on usefulness ([ipfs/go-bitswap#191](https://github.com/ipfs/go-bitswap/pull/191))
+- github.com/ipfs/go-cid (v0.0.2 -> v0.0.4):
+  - fix parsing issues and nits ([ipfs/go-cid#97](https://github.com/ipfs/go-cid/pull/97))
+  - Verify that prefix is correct v0 prefix ([ipfs/go-cid#96](https://github.com/ipfs/go-cid/pull/96))
+- github.com/multiformats/go-multihash (v0.0.5 -> v0.0.10):
+  - Ensure that length of multihash is properly handled ([multiformats/go-multihash#119](https://github.com/multiformats/go-multihash/pull/119))
+  - fix murmur3 name  ([multiformats/go-multihash#115](https://github.com/multiformats/go-multihash/pull/115))
+  - rename ID to IDENTITY ([multiformats/go-multihash#113](https://github.com/multiformats/go-multihash/pull/113))
+ ([multiformats/go-multihash#119](https://github.com/multiformats/go-multihash/pull/119))
+- github.com/libp2p/go-flow-metrics (v0.0.1 -> v0.0.3):
+  - fix bug in meter traversal logic ([libp2p/go-flow-metrics#11](https://github.com/libp2p/go-flow-metrics/pull/11))
+- github.com/libp2p/go-libp2p (v0.0.28 -> v0.0.32):
+  - options to configure known relays for autorelay ([libp2p/go-libp2p#705](https://github.com/libp2p/go-libp2p/pull/705))
+  - feat(host): recursively resolve addresses ([libp2p/go-libp2p#764](https://github.com/libp2p/go-libp2p/pull/764))
+  - mdns: always use interface addresses ([libp2p/go-libp2p#667](https://github.com/libp2p/go-libp2p/pull/667))
+- github.com/libp2p/go-libp2p-connmgr (v0.0.6 -> v0.2.1):
+  - don't count connections in the grace period against the limit ([libp2p/go-libp2p-connmgr#50](https://github.com/libp2p/go-libp2p-connmgr/pull/50))
+- github.com/libp2p/go-libp2p-kad-dht (v0.0.13 -> v0.0.15):
+  - metrics: fix memory leak ([libp2p/go-libp2p-kad-dht#390](https://github.com/libp2p/go-libp2p-kad-dht/pull/390))
+- github.com/libp2p/go-libp2p-tls (v0.0.1 -> v0.0.2):
+  - close the underlying connection when the handshake fails ([libp2p/go-libp2p-tls#39](https://github.com/libp2p/go-libp2p-tls/pull/39))
+  - make the error check for not receiving a public key more explicit ([libp2p/go-libp2p-tls#34](https://github.com/libp2p/go-libp2p-tls/pull/34))
+  - Fix: Connection Closed after handshake ([libp2p/go-libp2p-tls#37](https://github.com/libp2p/go-libp2p-tls/pull/37))
+- github.com/libp2p/go-libp2p-swarm (v0.0.6 -> v0.0.7):
+  - fix: don't assume that transports implement stringer ([libp2p/go-libp2p-swarm#134](https://github.com/libp2p/go-libp2p-swarm/pull/134))
+- github.com/libp2p/go-ws-transport (v0.0.4 -> v0.0.6):
+  - Add mutex for write/close ([libp2p/go-ws-transport#65](https://github.com/libp2p/go-ws-transport/pull/65))
+
+Other:
+
+Update bloom filter libraries to remove unsound usage of the `unsafe` package.
+
+### Contributors
+
+| Contributor | Commits | Lines ± | Files Changed |
+|-------------|---------|---------|---------------|
+| Steven Allen | 52 | +1866/-578 | 102 |
+| vyzo | 12 | +167/-90 | 22 |
+| whyrusleeping | 5 | +136/-52 | 7 |
+| Roman Proskuryakov | 7 | +94/-7 | 10 |
+| Jakub Sztandera | 3 | +58/-13 | 7 |
+| hcg1314 | 2 | +31/-11 | 2 |
+| Raúl Kripalani | 2 | +7/-33 | 6 |
+| Marten Seemann | 3 | +27/-10 | 5 |
+| Marcin Rataj | 2 | +26/-0 | 5 |
+| b5 | 1 | +2/-22 | 1 |
+| Hector Sanjuan | 1 | +11/-0 | 1 |
+| Yusef Napora | 1 | +4/-0 | 1 |
+
+## 0.4.22 2019-08-06
+
+We're releasing a PATCH release of go-ipfs based on 0.4.21 containing some critical fixes.
+
+The IPFS network has scaled to the point where small changes can have a
+wide-reaching impact on the entire network. To keep this situation from
+escalating, we've put a hold on releasing new features until we can improve our
+[release process](https://github.com/ipfs/go-ipfs/blob/master/docs/releases.md)
+(which we've trialed in this release) and [testing
+procedures](https://github.com/ipfs/go-ipfs/issues/6483).
+
+This release includes fixes for the following regressions:
+
+1. A major bitswap throughput regression introduced in 0.4.21
+   ([ipfs/go-ipfs#6442](https://github.com/ipfs/go-ipfs/issues/6442)).
+2. High bitswap CPU usage when connected to many (e.g. 10,000) peers. See
+   [ipfs/go-bitswap#154](https://github.com/ipfs/go-bitswap/issues/154).
+2. The local network discovery service sometimes initializes before the
+   networking module, causing it to announce the wrong addresses and sometimes
+   complain about not being able to determine the IP address
+   ([ipfs/go-ipfs#6415](https://github.com/ipfs/go-ipfs/pull/6415)).
+   
+It also includes fixes for:
+
+1. Pins not being persisted after `ipfs block add --pin`
+   ([ipfs/go-ipfs#6441](https://github.com/ipfs/go-ipfs/pull/6441)).
+2. Panic due to concurrent map access when adding and listing pins at the same
+   time ([ipfs/go-ipfs#6419](https://github.com/ipfs/go-ipfs/pull/6419)).
+3. Potential pin-set corruption given a concurrent `ipfs repo gc` and `ipfs pin
+   rm` ([ipfs/go-ipfs#6444](https://github.com/ipfs/go-ipfs/pull/6444)).
+4. Build failure due to a deleted git tag in one of our dependencies
+   ([ipfs/go-ds-badger#64](https://github.com/ipfs/go-ds-badger/pull/65)).
+
+Thanks to:
+
+* [@hannahhoward](https://github.com/hannahhoward) for fixing both bitswap issues.
+* [@sanderpick](https://github.com/sanderpick) for catching and fixing the local
+  discovery bug.
+* [@campoy](https://github.com/campoy) for fixing the build issue.
+
 ## 0.4.21 2019-05-30
 
 We're happy to announce go-ipfs 0.4.21. This release has some critical bug fixes
@@ -162,6 +621,16 @@ it uses a _lot_ of file descriptors.
 Luckily, most modern kernels can handle thousands of file descriptors without
 any difficulty.
 
+#### Decreased Connection Handshake Latency
+
+Libp2p now shaves off a couple of round trips when initiating connections by
+beginning the protocol negotiation before the remote peer responds to the
+initial handshake message.
+
+In the optimal case (when the target peer speaks our preferred protocol), this
+reduces the number of handshake round-trips from 6 to 4 (including the TCP
+handshake).
+
 ### Commands
 
 This release brings no new commands but does introduce a few changes, bugfixes,
@@ -217,6 +686,129 @@ The ping command has received some small improvements and fixes:
 3. It now prints out the average latency when canceled with `^C` (like the unix
    `ping` command).
 
+#### Improved Help Text
+
+Go-ipfs now intelligently wraps help text for easier reading. On an 80 character
+wide terminal,
+
+**Before**
+
+```
+USAGE
+  ipfs add <path>... - Add a file or directory to ipfs.
+
+SYNOPSIS
+  ipfs add [--recursive | -r] [--dereference-args] [--stdin-name=<stdin-name>] [
+--hidden | -H] [--quiet | -q] [--quieter | -Q] [--silent] [--progress | -p] [--t
+rickle | -t] [--only-hash | -n] [--wrap-with-directory | -w] [--chunker=<chunker
+> | -s] [--pin=false] [--raw-leaves] [--nocopy] [--fscache] [--cid-version=<cid-
+version>] [--hash=<hash>] [--inline] [--inline-limit=<inline-limit>] [--] <path>
+...
+
+ARGUMENTS
+
+  <path>... - The path to a file to be added to ipfs.
+
+OPTIONS
+
+  -r,               --recursive           bool   - Add directory paths recursive
+ly.
+  --dereference-args                      bool   - Symlinks supplied in argument
+s are dereferenced.
+  --stdin-name                            string - Assign a name if the file sou
+rce is stdin.
+  -H,               --hidden              bool   - Include files that are hidden
+. Only takes effect on recursive add.
+  -q,               --quiet               bool   - Write minimal output.
+  -Q,               --quieter             bool   - Write only final hash.
+  --silent                                bool   - Write no output.
+  -p,               --progress            bool   - Stream progress data.
+  -t,               --trickle             bool   - Use trickle-dag format for da
+g generation.
+  -n,               --only-hash           bool   - Only chunk and hash - do not 
+write to disk.
+  -w,               --wrap-with-directory bool   - Wrap files with a directory o
+bject.
+  -s,               --chunker             string - Chunking algorithm, size-[byt
+es] or rabin-[min]-[avg]-[max]. Default: size-262144.
+  --pin                                   bool   - Pin this object when adding. 
+Default: true.
+  --raw-leaves                            bool   - Use raw blocks for leaf nodes
+. (experimental).
+  --nocopy                                bool   - Add the file using filestore.
+ Implies raw-leaves. (experimental).
+  --fscache                               bool   - Check the filestore for pre-e
+xisting blocks. (experimental).
+  --cid-version                           int    - CID version. Defaults to 0 un
+less an option that depends on CIDv1 is passed. (experimental).
+  --hash                                  string - Hash function to use. Implies
+ CIDv1 if not sha2-256. (experimental). Default: sha2-256.
+  --inline                                bool   - Inline small blocks into CIDs
+. (experimental).
+  --inline-limit                          int    - Maximum block size to inline.
+ (experimental). Default: 32.
+
+```
+
+
+**After**
+
+```
+USAGE
+  ipfs add <path>... - Add a file or directory to ipfs.
+
+SYNOPSIS
+  ipfs add [--recursive | -r] [--dereference-args] [--stdin-name=<stdin-name>]
+           [--hidden | -H] [--quiet | -q] [--quieter | -Q] [--silent]
+           [--progress | -p] [--trickle | -t] [--only-hash | -n]
+           [--wrap-with-directory | -w] [--chunker=<chunker> | -s] [--pin=false]
+           [--raw-leaves] [--nocopy] [--fscache] [--cid-version=<cid-version>]
+           [--hash=<hash>] [--inline] [--inline-limit=<inline-limit>] [--]
+           <path>...
+
+ARGUMENTS
+
+  <path>... - The path to a file to be added to ipfs.
+
+OPTIONS
+
+  -r, --recursive            bool   - Add directory paths recursively.
+  --dereference-args         bool   - Symlinks supplied in arguments are
+                                      dereferenced.
+  --stdin-name               string - Assign a name if the file source is stdin.
+  -H, --hidden               bool   - Include files that are hidden. Only takes
+                                      effect on recursive add.
+  -q, --quiet                bool   - Write minimal output.
+  -Q, --quieter              bool   - Write only final hash.
+  --silent                   bool   - Write no output.
+  -p, --progress             bool   - Stream progress data.
+  -t, --trickle              bool   - Use trickle-dag format for dag generation.
+  -n, --only-hash            bool   - Only chunk and hash - do not write to
+                                      disk.
+  -w, --wrap-with-directory  bool   - Wrap files with a directory object.
+  -s, --chunker              string - Chunking algorithm, size-[bytes] or
+                                      rabin-[min]-[avg]-[max]. Default:
+                                      size-262144.
+  --pin                      bool   - Pin this object when adding. Default:
+                                      true.
+  --raw-leaves               bool   - Use raw blocks for leaf nodes.
+                                      (experimental).
+  --nocopy                   bool   - Add the file using filestore. Implies
+                                      raw-leaves. (experimental).
+  --fscache                  bool   - Check the filestore for pre-existing
+                                      blocks. (experimental).
+  --cid-version              int    - CID version. Defaults to 0 unless an
+                                      option that depends on CIDv1 is passed.
+                                      (experimental).
+  --hash                     string - Hash function to use. Implies CIDv1 if
+                                      not sha2-256. (experimental). Default:
+                                      sha2-256.
+  --inline                   bool   - Inline small blocks into CIDs.
+                                      (experimental).
+  --inline-limit             int    - Maximum block size to inline.
+                                      (experimental). Default: 32.
+```
+
 ### Features
 
 This release is primarily a bug fix release but it still includes two nice
@@ -252,7 +844,7 @@ receiving multiple inbound connections per second.
 To enable openssl support, rebuild go-ipfs with:
 
 ```bash
-> make build GOFLAGS=-tags=openssl
+> make build GOTAGS=openssl
 ```
 
 ### CoreAPI
@@ -272,6 +864,7 @@ go versions during builds.
 ### Changelog
 
 - github.com/ipfs/go-ipfs:
+  - fix: use http.Error for sending errors ([ipfs/go-ipfs#6379](https://github.com/ipfs/go-ipfs/pull/6379))
   - core: call app.Stop once ([ipfs/go-ipfs#6380](https://github.com/ipfs/go-ipfs/pull/6380))
   - explain what dhtclient does ([ipfs/go-ipfs#6375](https://github.com/ipfs/go-ipfs/pull/6375))
   - ci: actually enable golangci-lint ([ipfs/go-ipfs#6362](https://github.com/ipfs/go-ipfs/pull/6362))
@@ -348,7 +941,11 @@ go versions during builds.
   - sync: apply entire query while locked ([ipfs/go-datastore#129](https://github.com/ipfs/go-datastore/pull/129))
   - filter: values are now always bytes ([ipfs/go-datastore#126](https://github.com/ipfs/go-datastore/pull/126))
   - autobatch: batch deletes ([ipfs/go-datastore#128](https://github.com/ipfs/go-datastore/pull/128))
-- github.com/ipfs/go-ipfs-cmds (v0.0.5 -> v0.0.7):
+- github.com/ipfs/go-ipfs-cmds (v0.0.5 -> v0.0.8):
+  - fix: use golang's http.Error to send errors ([ipfs/go-ipfs-cmds#167](https://github.com/ipfs/go-ipfs-cmds/pull/167))
+  - improve help text on narrow terminals ([ipfs/go-ipfs-cmds#140](https://github.com/ipfs/go-ipfs-cmds/pull/140))
+  - chore: remove an old hack ([ipfs/go-ipfs-cmds#165](https://github.com/ipfs/go-ipfs-cmds/pull/165))
+  - http: use the request context ([ipfs/go-ipfs-cmds#163](https://github.com/ipfs/go-ipfs-cmds/pull/163))
   - merge in go-ipfs-cmdkit ([ipfs/go-ipfs-cmds#164](https://github.com/ipfs/go-ipfs-cmds/pull/164))
   - fix: return the correct error ([ipfs/go-ipfs-cmds#162](https://github.com/ipfs/go-ipfs-cmds/pull/162))
 - github.com/ipfs/go-ipfs-config (v0.0.1 -> v0.0.3):
@@ -439,10 +1036,16 @@ go versions during builds.
   - add an example (mainly for development) ([libp2p/go-libp2p-tls#14](https://github.com/libp2p/go-libp2p-tls/pull/14))
 - github.com/libp2p/go-libp2p-transport-upgrader (v0.0.1 -> v0.0.4):
   - improve correctness of closing connections on failure ([libp2p/go-libp2p-transport-upgrader#19](https://github.com/libp2p/go-libp2p-transport-upgrader/pull/19))
+- github.com/libp2p/go-maddr-filter (v0.0.1 -> v0.0.4):
+  - fix filter listing ([libp2p/go-maddr-filter#13](https://github.com/libp2p/go-maddr-filter/pull/13))
+  - Reinstate deprecated Remove() method to reverse breakage ([libp2p/go-maddr-filter#12](https://github.com/libp2p/go-maddr-filter/pull/12))
+  - Implement support for whitelists, default-deny/allow ([libp2p/go-maddr-filter#8](https://github.com/libp2p/go-maddr-filter/pull/8))
 - github.com/libp2p/go-mplex (v0.0.1 -> v0.0.4):
+  - disable write coalescing ([libp2p/go-mplex#61](https://github.com/libp2p/go-mplex/pull/61))
   - fix SetDeadline error conditions ([libp2p/go-mplex#59](https://github.com/libp2p/go-mplex/pull/59))
   - don't use contexts for deadlines ([libp2p/go-mplex#58](https://github.com/libp2p/go-mplex/pull/58))
   - don't reset on pathologies, just ignore the data ([libp2p/go-mplex#57](https://github.com/libp2p/go-mplex/pull/57))
+  - coalesce writes ([libp2p/go-mplex#54](https://github.com/libp2p/go-mplex/pull/54))
   - read as much as we can in one go ([libp2p/go-mplex#53](https://github.com/libp2p/go-mplex/pull/53))
   - use timeouts when sending messages for stream open, close, and reset. ([libp2p/go-mplex#52](https://github.com/libp2p/go-mplex/pull/52))
   - fix: reset a stream even if closed remotely ([libp2p/go-mplex#50](https://github.com/libp2p/go-mplex/pull/50))
@@ -450,6 +1053,9 @@ go versions during builds.
   - Fix race condition by adding a mutex for deadline access ([libp2p/go-mplex#41](https://github.com/libp2p/go-mplex/pull/41))
 - github.com/libp2p/go-msgio (v0.0.1 -> v0.0.2):
   - fix: never claim to read more than read ([libp2p/go-msgio#12](https://github.com/libp2p/go-msgio/pull/12))
+- github.com/libp2p/go-ws-transport (v0.0.2 -> v0.0.4):
+  - dep: import go-smux-* into the libp2p org ([libp2p/go-ws-transport#43](https://github.com/libp2p/go-ws-transport/pull/43))
+  - replace gx instructions with note about gomod ([libp2p/go-ws-transport#42](https://github.com/libp2p/go-ws-transport/pull/42))
 
 
 ## 0.4.20 2019-04-16

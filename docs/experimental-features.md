@@ -8,7 +8,7 @@ removed.
 
 Subscribe to https://github.com/ipfs/go-ipfs/issues/3397 to get updates.
 
-When you add a new experimental feature to go-ipfs, or change an experimental
+When you add a new experimental feature to go-ipfs or change an experimental
 feature, you MUST please make a PR updating this document, and link the PR in
 the above issue.
 
@@ -29,6 +29,8 @@ the above issue.
 - [QUIC](#quic)
 - [AutoRelay](#autorelay)
 - [TLS 1.3 Handshake](#tls-13-as-default-handshake-protocol)
+- [Strategic Providing](#strategic-providing)
+- [Graphsync](graphsync)
 
 ---
 
@@ -51,7 +53,7 @@ run your daemon with the `--enable-pubsub-experiment` flag. Then use the
 
 Gossipsub is a new, experimental routing protocol for pubsub that
 should waste less bandwidth than floodsub, the current pubsub
-protocol. It's backwards compatible with floodsub so enabling this
+protocol. It's backward compatible with floodsub so enabling this
 feature shouldn't break compatibility with existing IPFS nodes.
 
 You can enable gossipsub via configuration:
@@ -74,27 +76,26 @@ signed) by running:
 
 ### Road to being a real feature
 - [ ] Needs more people to use and report on how well it works
-- [ ] Needs authenticated modes to be implemented
+- [ ] Needs authenticating modes to be implemented
 - [ ] needs performance analyses to be done
 
 ---
 
 ## Client mode DHT routing
+
 Allows the dht to be run in a mode that doesn't serve requests to the network,
 saving bandwidth.
 
 ### State
-experimental.
+stable
 
 ### In Version
-0.4.5
+
+0.5.0
 
 ### How to enable
-run your daemon with the `--routing=dhtclient` flag.
 
-### Road to being a real feature
-- [ ] Needs more people to use and report on how well it works.
-- [ ] Needs analysis of effect it has on the network as a whole.
+run your daemon with the `--routing=dhtclient` flag.
 
 ---
 
@@ -166,7 +167,7 @@ filestore instead of copying the files into your local IPFS repo.
 ---
 
 ## ipfs urlstore
-Allows ipfs to retrieve blocks contents via a url instead of storing it in the datastore
+Allows ipfs to retrieve blocks contents via a URL instead of storing it in the datastore
 
 ### State
 experimental.
@@ -193,7 +194,7 @@ And then add a file at a specific URL using `ipfs urlstore add <url>`
 
 ## Private Networks
 
-Allows ipfs to only connect to other peers who have a shared secret key.
+It allows ipfs to only connect to other peers who have a shared secret key.
 
 ### State
 Experimental
@@ -228,7 +229,7 @@ ipfs bootstrap add <multiaddr>
 
 For example:
 ```
-ipfs bootstrap add /ip4/104.236.76.40/tcp/4001/ipfs/QmSoLV4Bbm51jM9C4gDYZQ9Cy3U6aXMJDAbzgu2fzaDs64
+ipfs bootstrap add /ip4/104.236.76.40/tcp/4001/p2p/QmSoLV4Bbm51jM9C4gDYZQ9Cy3U6aXMJDAbzgu2fzaDs64
 ```
 
 Bootstrap nodes are no different from all other nodes in the network apart from
@@ -247,7 +248,7 @@ configured, the daemon will fail to start.
 ## ipfs p2p
 
 Allows tunneling of TCP connections through Libp2p streams. If you've ever used
-port forwarding with SSH (the `-L` option in openssh), this feature is quite
+port forwarding with SSH (the `-L` option in OpenSSH), this feature is quite
 similar.
 
 ### State
@@ -260,7 +261,7 @@ master, 0.4.10
 
 ### How to enable
 
-The `p2p` command needs to be enabled in config:
+The `p2p` command needs to be enabled in the config:
 
 ```sh
 > ipfs config --json Experimental.Libp2pStreamMounting true
@@ -301,7 +302,7 @@ connections on `127.0.0.1:SOME_PORT` to the server node listening
 on `/x/kickass/1.0`.
 
 ```sh
-> ipfs p2p forward /x/kickass/1.0 /ip4/127.0.0.1/tcp/$SOME_PORT /ipfs/$SERVER_ID
+> ipfs p2p forward /x/kickass/1.0 /ip4/127.0.0.1/tcp/$SOME_PORT /p2p/$SERVER_ID
 ```
 
 Next, have your application open a connection to `127.0.0.1:$SOME_PORT`. This
@@ -342,7 +343,7 @@ ipfs p2p listen /x/ssh /ip4/127.0.0.1/tcp/22
 ***Then, on "client" node:***
 
 ```sh
-ipfs p2p forward /x/ssh /ip4/127.0.0.1/tcp/2222 /ipfs/$SERVER_ID
+ipfs p2p forward /x/ssh /ip4/127.0.0.1/tcp/2222 /p2p/$SERVER_ID
 ```
 
 You should now be able to connect to your ssh server through a libp2p connection
@@ -352,13 +353,13 @@ with `ssh [user]@127.0.0.1 -p 2222`.
 ### Road to being a real feature
 - [ ] Needs more people to use and report on how well it works / fits use cases
 - [ ] More documentation
-- [ ] Support other protocols (e.g, unix domain sockets, websockets, etc.)
+- [ ] Support other protocols (e.g, Unix domain sockets, WebSockets, etc.)
 
 ---
 
 ## p2p http proxy
 
-Allows proxying of HTTP requests over p2p streams. This allows serving any standard http app over p2p streams.
+Allows proxying of HTTP requests over p2p streams. This allows serving any standard HTTP app over p2p streams.
 
 ### State
 
@@ -370,13 +371,13 @@ master, 0.4.19
 
 ### How to enable
 
-The `p2p` command needs to be enabled in config:
+The `p2p` command needs to be enabled in the config:
 
 ```sh
 > ipfs config --json Experimental.Libp2pStreamMounting true
 ```
 
-On the client, the p2p http proxy needs to be enabled in the config:
+On the client, the p2p HTTP proxy needs to be enabled in the config:
 
 ```sh
 > ipfs config --json Experimental.P2pHttpProxy true
@@ -425,10 +426,10 @@ the remote machine (which needs to be a http server!) with path `$FORWARDED_PATH
 > curl http://localhost:8080/p2p/$SERVER_ID/http/
 ```
 
-You should now see the resulting http response: IPFS rocks!
+You should now see the resulting HTTP response: IPFS rocks!
 
 ### Custom protocol names
-We also support use of protocol names of the form /x/$NAME/http where $NAME doesn't contain any "/"'s
+We also support the use of protocol names of the form /x/$NAME/http where $NAME doesn't contain any "/"'s
 
 ### Road to being a real feature
 - [ ] Needs p2p streams to graduate from experiments
@@ -451,7 +452,7 @@ master, 0.4.11
 ### How to enable
 
 The relay transport is enabled by default, which allows peers to dial through
-relay and listens for incoming relay connections. The transport can be disabled
+a relay and listens for incoming relay connections. The transport can be disabled
 by setting `Swarm.DisableRelay = true` in the configuration.
 
 By default, peers don't act as intermediate nodes (relays). This can be enabled
@@ -461,16 +462,16 @@ already online node would have to be restarted.
 
 ### Basic Usage:
 
-In order to connect peers QmA and QmB through a relay node QmRelay:
+To connect peers QmA and QmB through a relay node QmRelay:
 
 - Both peers should connect to the relay:
-`ipfs swarm connect /transport/address/ipfs/QmRelay`
+`ipfs swarm connect /transport/address/p2p/QmRelay`
 - Peer QmA can then connect to peer QmB using the relay:
-`ipfs swarm connect /ipfs/QmRelay/p2p-circuit/ipfs/QmB`
+`ipfs swarm connect /p2p/QmRelay/p2p-circuit/p2p/QmB`
 
 Peers can also connect with an unspecific relay address, which will
 try to dial through known relays:
-`ipfs swarm connect /p2p-circuit/ipfs/QmB`
+`ipfs swarm connect /p2p-circuit/p2p/QmB`
 
 Peers can see their (unspecific) relay address in the output of
 `ipfs swarm addrs listen`
@@ -481,8 +482,7 @@ Peers can see their (unspecific) relay address in the output of
 - [ ] Advertise relay addresses to the DHT for NATed or otherwise unreachable
       peers.
 - [ ] Active relay discovery for specific relay address advertisement. We would
-      like advertised relay addresses to designate specific relays for efficient
-      dialing.
+      like advertised relay addresses to designate specific relays for efficient dialing.
 - [ ] Dialing priorities for relay addresses; arguably, relay addresses should
       have lower priority than direct dials.
 
@@ -494,7 +494,7 @@ Peers can see their (unspecific) relay address in the output of
 ### State
 Experimental
 
-Plugins allow to add functionality without the need to recompile the daemon.
+Plugins allow adding functionality without the need to recompile the daemon.
 
 ### Basic Usage:
 
@@ -506,27 +506,31 @@ See [Plugin docs](./plugins.md)
 - [ ] More plugins and plugin types
 - [ ] Feedback on stability
 
- ## Badger datastore
+---
 
- ### In Version
- 0.4.11
+## Badger datastore
 
- Badger-ds is new datastore implementation based on
- https://github.com/dgraph-io/badger
+### In Version
 
- ### Basic Usage
+0.4.11
 
- ```
- $ ipfs init --profile=badgerds
- ```
- or install https://github.com/ipfs/ipfs-ds-convert/ and
- ```
- [BACKUP ~/.ipfs]
- $ ipfs config profile apply badgerds
- $ ipfs-ds-convert convert
- ```
+Badger-ds is new datastore implementation based on
+https://github.com/dgraph-io/badger.
+ 
 
-###
+### Basic Usage
+
+```
+$ ipfs init --profile=badgerds
+```
+or install https://github.com/ipfs/ipfs-ds-convert/ and
+```
+[BACKUP ~/.ipfs]
+$ ipfs config profile apply badgerds
+$ ipfs-ds-convert convert
+```
+
+You can read more in the [datastore](./datastores.md#badgerds) documentation.
 
 ### Road to being a real feature
 
@@ -541,7 +545,7 @@ See [Plugin docs](./plugins.md)
 ### State
 Experimental
 
-Allows to create directories with unlimited number of entries - currently
+Allows creating directories with an unlimited number of entries - currently
 size of unixfs directories is limited by the maximum block size
 
 ### Basic Usage:
@@ -573,14 +577,9 @@ When it is enabled:
 - IPNS publishers push records to a name-specific pubsub topic,
   in addition to publishing to the DHT.
 - IPNS resolvers subscribe to the name-specific topic on first
-  resolution and receive subsequently published records through pubsub
-  in real time. This makes subsequent resolutions instant, as they
-  are resolved through the local cache. Note that the initial
-  resolution still goes through the DHT, as there is no message
-  history in pubsub.
+  resolution and receive subsequently published records through pubsub in real time. This makes subsequent resolutions instant, as they are resolved through the local cache. Note that the initial resolution still goes through the DHT, as there is no message history in pubsub.
 
-Both the publisher and the resolver nodes need to have the feature enabled for it
-to work effectively.
+Both the publisher and the resolver nodes need to have the feature enabled for it to work effectively.
 
 ### How to enable
 
@@ -593,7 +592,7 @@ run your daemon with the `--enable-namesys-pubsub` flag; enables pubsub.
   so that we don't have to hit the DHT for the initial resolution.
   Alternatively, we could republish the last record periodically.
 
-
+---
 
 ## QUIC
 
@@ -613,14 +612,14 @@ Modify your ipfs config:
 ipfs config --json Experimental.QUIC true
 ```
 
-For listening on a QUIC address, add it the swarm addresses, e.g. `/ip4/0.0.0.0/udp/4001/quic`.
+For listening on a QUIC address, add it to the swarm addresses, e.g. `/ip4/0.0.0.0/udp/4001/quic`.
 
 
 ### Road to being a real feature
 
-- [ ] The IETF QUIC specification needs to be finalised.
+- [ ] The IETF QUIC specification needs to be finalized.
 - [ ] Make sure QUIC connections work reliably
-- [ ] Make sure QUIC connection offer equal or better performance than TCP connections on real world networks
+- [ ] Make sure QUIC connection offer equal or better performance than TCP connections on real-world networks
 - [ ] Finalize libp2p-TLS handshake spec.
 
 
@@ -628,7 +627,7 @@ For listening on a QUIC address, add it the swarm addresses, e.g. `/ip4/0.0.0.0/
 
 ### In Version
 
-0.4.19-dev
+0.4.19
 
 ### State
 
@@ -656,21 +655,64 @@ ipfs config --json Swarm.EnableAutoNATService true
 
 ## TLS 1.3 as default handshake protocol
 
+### In Version
+
+0.5.0
+
 ### State
 
-Every go-ipfs node (>=0.4.21) accepts secio and TLS 1.3 connections but prefers
-secio over TLS when dialing. To prefer TLS when dialing, you'll have to enable
-this feature.
+Stable
+
+---
+
+## Strategic Providing
+
+### State
+
+Experimental, disabled by default.
+
+Replaces the existing provide mechanism with a robust, strategic provider system.
 
 ### How to enable
 
 Modify your ipfs config:
 
 ```
-ipfs config --json Experimental.PreferTLS true
+ipfs config --json Experimental.StrategicProviding true
 ```
 
 ### Road to being a real feature
 
-- [ ] needs testing
+- [ ] needs real-world testing
 - [ ] needs adoption
+- [ ] needs to support all provider subsystem features
+    - [X] provide nothing
+    - [ ] provide roots
+    - [ ] provide all
+    - [ ] provide strategic
+    
+---
+
+## GraphSync
+
+### State
+
+Experimental, disabled by default.
+
+[GraphSync](https://github.com/ipfs/go-graphsync) is the next-gen graph exchange
+protocol for IPFS.
+
+When this feature is enabled, IPFS will make files available over the graphsync
+protocol. However, IPFS will not currently use this protocol to _fetch_ files.
+
+### How to enable
+
+Modify your ipfs config:
+
+```
+ipfs config --json Experimental.GraphsyncEnabled true
+```
+
+### Road to being a real feature
+
+- [ ] We need to confirm that it can't be used to DoS a node. The server-side logic for GraphSync is quite complex and, if we're not careful, the server might end up performing unbounded work when responding to a malicious request.
